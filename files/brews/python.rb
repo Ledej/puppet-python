@@ -5,6 +5,7 @@ class Python < Formula
   head 'http://hg.python.org/cpython', :using => :hg, :branch => '2.7'
   url 'http://www.python.org/ftp/python/2.7.4/Python-2.7.4.tgz'
   sha1 '592603cfaf4490a980e93ecb92bde44a14489063'
+  version '2.7.4-boxen'
 
   option :universal
   option 'quicktest', "Run `make quicktest` after the build (for devs; may fail)"
