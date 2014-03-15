@@ -1,13 +1,13 @@
 require 'formula'
 
 class Distribute < Formula
-  url 'http://pypi.python.org/packages/source/d/distribute/distribute-0.6.34.tar.gz'
-  sha1 'b6f9cfbaf3e63833b71009812a613be13e68f5de'
+  url 'https://pypi.python.org/packages/source/d/distribute/distribute-0.6.35.tar.gz'
+  sha1 'a928104ea1bd1f85c35de6d0d5f1628d2602ac66'
 end
 
 class Pip < Formula
-  url 'http://pypi.python.org/packages/source/p/pip/pip-1.2.1.tar.gz'
-  sha1 '35db84983ef3f66a8a161d320e61d192afc233d9'
+  url 'https://pypi.python.org/packages/source/p/pip/pip-1.3.1.tar.gz'
+  sha1 '9c70d314e5dea6f41415af814056b0f63c3ffd14'
 end
 
 class Python < Formula
@@ -17,7 +17,7 @@ class Python < Formula
   version '2.7.3-boxen2'
 
   option :universal
-  option 'quicktest', 'Run `make quicktest` after the build'
+  option 'quicktest', 'Run `make quicktest` after the build (for devs; may fail)'
   option 'with-brewed-openssl', "Use Homebrew's openSSL instead of the one from OS X"
   option 'with-brewed-tk', "Use Homebrew's Tk (has optional Cocoa and threads support)"
   option 'with-poll', 'Enable select.poll, which is not fully implemented on OS X (http://bugs.python.org/issue5154)'
@@ -29,7 +29,7 @@ class Python < Formula
   depends_on 'sqlite' => :recommended
   depends_on 'gdbm' => :recommended
   depends_on 'openssl' if build.include? 'with-brewed-openssl'
-  depends_on 'homebrew/dupes/tk' if build.include? 'with-brewed-tk'
+  depends_on 'homebrew/dupes/tcl-tk' if build.include? 'with-brewed-tk'
 
   def patches
     p = []
@@ -37,7 +37,8 @@ class Python < Formula
     # see http://bugs.python.org/issue14662
     p << "https://gist.github.com/raw/4349132/25662c6b382315b5db67bf949773d76471bbcee7/python-nfs-shutil.diff"
     p << 'https://raw.github.com/gist/3415636/2365dea8dc5415daa0148e98c394345e1191e4aa/pythondtrace-patch.diff' if build.include? 'with-dtrace'
-    # Patch to disable the search for Tk.frameworked, since homebrew's Tk is a plain unix build
+    # Patch to disable the search for Tk.frameworked, since homebrew's Tk is
+    # a plain unix build. Remove `-lX11`, too because our Tk is "AquaTk".
     p << DATA if build.include? 'with-brewed-tk'
     p
   end
@@ -109,8 +110,12 @@ class Python < Formula
     # so that user-installed Python software survives minor updates, such
     # as going from 2.7.0 to 2.7.1:
 
-    # Symlink the cellar into the prefix site-packages.
-    ln_s site_packages_cellar, site_packages
+    # Remove the site-packages that Python created in its Cellar.
+    site_packages_cellar.rmtree
+    # Create a site-packages in HOMEBREW_PREFIX/lib/python/site-packages
+    site_packages.mkpath
+    # Symlink the prefix site-packages into the cellar.
+    ln_s site_packages, site_packages_cellar
 
     # Teach python not to use things from /System
     # and tell it about the correct site-package dir because we moved it
@@ -122,7 +127,7 @@ class Python < Formula
       import sys
       import site
 
-      # Only fix if the currently run python is a brewed one.
+      # Only do fix 1 and 2, if the currently run python is a brewed one.
       if sys.executable.startswith('#{HOMEBREW_PREFIX}'):
           # Fix 1)
           #   A setuptools.pth and/or easy-install.pth sitting either in
@@ -135,7 +140,11 @@ class Python < Formula
           #   See: https://github.com/mxcl/homebrew/issues/14712
           sys.path = [ p for p in sys.path if not p.startswith('/System') ]
 
-      # Fix 2)
+          # Fix 2)
+          #   Remove brewed Python's hard-coded site-packages
+          sys.path.remove('#{site_packages_cellar}')
+
+      # Fix 3)
       #   For all Pythons: Tell about homebrew's site-packages location.
       #   This is needed for Python to parse *.pth files.
       site.addsitedir('#{site_packages}')
@@ -146,7 +155,7 @@ class Python < Formula
     # forget to put #{script_folder} in PATH, then easy_install'ing
     # into /Library/Python/X.Y/site-packages with /usr/bin/easy_install.
     mkdir_p scripts_folder unless scripts_folder.exist?
-    setup_args = ["-s", "setup.py", "--no-user-cfg", "install", "--force", "--verbose", "--install-lib=#{site_packages_cellar}", "--install-scripts=#{bin}" ]
+    setup_args = ["-s", "setup.py", "--no-user-cfg", "install", "--force", "--verbose", "--install-lib=#{site_packages_cellar}", "--install-scripts=#{bin}"]
     Distribute.new.brew { system "#{bin}/python", *setup_args }
     Pip.new.brew { system "#{bin}/python", *setup_args }
 
@@ -172,9 +181,14 @@ class Python < Formula
   end
 
   def distutils_fix_superenv(args)
-    # To allow certain Python bindings to find brewed software:
+    # This is not for building python itself but to allow Python's build tools
+    # (pip) to find brewed stuff when installing python packages.
     cflags = "CFLAGS=-I#{HOMEBREW_PREFIX}/include -I#{Formula.factory('sqlite').opt_prefix}/include"
     ldflags = "LDFLAGS=-L#{HOMEBREW_PREFIX}/lib -L#{Formula.factory('sqlite').opt_prefix}/lib"
+    if build.include? 'with-brewed-tk'
+      cflags += " -I#{Formula.factory('tcl-tk').opt_prefix}/include"
+      ldflags += " -L#{Formula.factory('tcl-tk').opt_prefix}/lib"
+    end
     unless MacOS::CLT.installed?
       # Help Python's build system (distribute/pip) to build things on Xcode-only systems
       # The setup.py looks at "-isysroot" to get the sysroot (and not at --sysroot)
@@ -262,19 +276,45 @@ end
 
 __END__
 diff --git a/setup.py b/setup.py
-index 6b47451..b0400f8 100644
+index 6b47451..36bc81d 100644
 --- a/setup.py
 +++ b/setup.py
-@@ -1702,9 +1702,9 @@ class PyBuildExt(build_ext):
+@@ -1702,9 +1702,6 @@ class PyBuildExt(build_ext):
          # AquaTk is a separate method. Only one Tkinter will be built on
          # Darwin - either AquaTk, if it is found, or X11 based Tk.
          platform = self.get_platform()
 -        if (platform == 'darwin' and
 -            self.detect_tkinter_darwin(inc_dirs, lib_dirs)):
 -            return
-+        # if (platform == 'darwin' and
-+        #     self.detect_tkinter_darwin(inc_dirs, lib_dirs)):
-+        #     return
-
+ 
          # Assume we haven't found any of the libraries or include files
          # The versions with dots are used on Unix, and the versions without
+@@ -1754,17 +1751,6 @@ class PyBuildExt(build_ext):
+         if platform == 'sunos5':
+             include_dirs.append('/usr/openwin/include')
+             added_lib_dirs.append('/usr/openwin/lib')
+-        elif os.path.exists('/usr/X11R6/include'):
+-            include_dirs.append('/usr/X11R6/include')
+-            added_lib_dirs.append('/usr/X11R6/lib64')
+-            added_lib_dirs.append('/usr/X11R6/lib')
+-        elif os.path.exists('/usr/X11R5/include'):
+-            include_dirs.append('/usr/X11R5/include')
+-            added_lib_dirs.append('/usr/X11R5/lib')
+-        else:
+-            # Assume default location for X11
+-            include_dirs.append('/usr/X11/include')
+-            added_lib_dirs.append('/usr/X11/lib')
+ 
+         # If Cygwin, then verify that X is installed before proceeding
+         if platform == 'cygwin':
+@@ -1790,8 +1776,8 @@ class PyBuildExt(build_ext):
+             libs.append('ld')
+ 
+         # Finally, link with the X11 libraries (not appropriate on cygwin)
+-        if platform != "cygwin":
+-            libs.append('X11')
++        # if platform != "cygwin":
++            # libs.append('X11')
+ 
+         ext = Extension('_tkinter', ['_tkinter.c', 'tkappinit.c'],
+                         define_macros=[('WITH_APPINIT', 1)] + defs,
